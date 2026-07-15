@@ -55,6 +55,13 @@ interface SpeechRecognitionInstance extends EventTarget {
 const FATAL_ERRORS = new Set(['not-allowed', 'service-not-allowed', 'language-not-supported']);
 const MAX_RETRIES = 5;
 const SAFARI_FINAL_TIMEOUT_MS = 750;
+// After this many consecutive restarts that never produced a transcript,
+// treat Web Speech as effectively unavailable. This happens in Chromium/
+// Electron builds with no Google speech backend (the Cursor in-app browser,
+// some Linux Chromium/Brave builds) where every session throws "network".
+// Rather than loop forever with no feedback, fall back to Deepgram (if a key
+// is configured) or the manual text-input UI.
+const MAX_DRY_RESTARTS_BEFORE_DEGRADE = 4;
 
 type WebSpeechProbeResult = 'untested' | 'works' | 'broken';
 
@@ -225,6 +232,39 @@ export class SpeechEngine {
         });
     }
 
+    /**
+     * Give up on live speech recognition and expose the manual text-input
+     * fallback. Called when Web Speech repeatedly fails to reach a speech
+     * backend and no Deepgram key is configured, so the user always gets a
+     * visible, usable input instead of a silent retry loop. Flipping
+     * `isSupported` to false is what makes UIOverlay reveal the text box;
+     * keeping `_isRunning` true keeps the mic session (and box) visible.
+     */
+    private degradeToTextInput(reason: string): void {
+        if (this.restartTimer !== null) {
+            clearTimeout(this.restartTimer);
+            this.restartTimer = null;
+        }
+        if (this.restartDebounceTimer !== null) {
+            clearTimeout(this.restartDebounceTimer);
+            this.restartDebounceTimer = null;
+        }
+        this.intentionallyStopped = true;
+        this.recognition = null;
+        this.isSupported = false;
+        this._isRunning = true;
+        this._lastError = reason;
+        this.webSpeechProbe = 'broken';
+        this.setStatus('unsupported', reason);
+        console.warn(
+            `[SpeechEngine] ⛔ Web Speech unavailable ("${reason}") after ` +
+            `${this.dryRestartCount} failed attempts — switching to text-input fallback. ` +
+            `For live voice, open the app in Google Chrome (Web Speech needs Google's ` +
+            `speech backend, which the in-app/Electron browser lacks), or set ` +
+            `VITE_DEEPGRAM_API_KEY to enable the WebSocket fallback.`,
+        );
+    }
+
     private createRecognition(): void {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const SpeechRecognitionCtor = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -318,6 +358,26 @@ export class SpeechEngine {
                     this.dryRestartCount = 0;
                 } else {
                     this.dryRestartCount++;
+                }
+
+                // Web Speech keeps restarting but never yields a transcript
+                // (typically repeated "network" errors on a browser with no
+                // usable speech backend). Stop the silent loop and give the
+                // user a working alternative + visible feedback.
+                if (this.dryRestartCount >= MAX_DRY_RESTARTS_BEFORE_DEGRADE) {
+                    if (this.deepgramApiKey && !this.usingWebSocket) {
+                        console.warn(
+                            '[SpeechEngine] Web Speech unavailable — switching to WebSocket (Deepgram) fallback',
+                        );
+                        this.intentionallyStopped = true;
+                        this.recognition = null;
+                        this.startWebSocketFallback();
+                        return;
+                    }
+                    if (!this.deepgramApiKey) {
+                        this.degradeToTextInput(this._lastError || 'network');
+                        return;
+                    }
                 }
 
                 const baseDelay = 300;

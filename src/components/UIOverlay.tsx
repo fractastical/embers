@@ -248,7 +248,9 @@ export function UIOverlay({ audioEngine, speechEngine, tuningConfig, isServerPro
                         placeholder={
                             sttError === 'not-allowed' || sttError === 'service-not-allowed'
                                 ? 'Enable microphone in browser settings to use voice'
-                                : 'Type words here (speech not supported)...'
+                                : sttError === 'network'
+                                    ? 'Voice unavailable here — type a scene (open in Chrome for live voice)'
+                                    : 'Type words here (speech not supported)...'
                         }
                         value={fallbackText}
                         onChange={(e) => setFallbackText(e.target.value)}
