@@ -102,6 +102,17 @@ export class ParticleSystem {
         this.velocityVariable.material.uniforms.uSentimentMovement = { value: 0.0 };
         this.velocityVariable.material.uniforms.uSentimentMovementIntensity = { value: config.get('sentimentMovementIntensity') };
 
+        // Connectome harmonics uniforms — driven by HarmonicsManager.
+        // A 1×1 zero texture is bound by default so the sampler is always
+        // valid; uHarmonicActive=0 keeps the code path inert until enabled.
+        const harmonicDefault = new THREE.DataTexture(
+            new Float32Array([0, 0, 0, 0]), 1, 1, THREE.RGBAFormat, THREE.FloatType,
+        );
+        harmonicDefault.needsUpdate = true;
+        this.velocityVariable.material.uniforms.tHarmonicField = { value: harmonicDefault };
+        this.velocityVariable.material.uniforms.uHarmonicActive = { value: 0.0 };
+        this.velocityVariable.material.uniforms.uHarmonicAmp = { value: 0.6 };
+
         this.velocityVariable.material.uniforms.uDelta = { value: 0.016 };
         this.positionVariable.material.uniforms.uDelta = { value: 0.016 };
 
@@ -153,6 +164,10 @@ export class ParticleSystem {
                 uBrightness: { value: 1.0 },   // Overall brightness multiplier
                 uCoreWeight: { value: 0.8 },   // Core dot intensity
                 uGlowWeight: { value: 0.4 },   // Glow halo intensity
+                // Connectome harmonics coloring — shares the field texture
+                // with the velocity shader; HarmonicsManager toggles the mode.
+                tHarmonicField: { value: harmonicDefault },
+                uHarmonicColor: { value: 0.0 },
             },
             vertexShader: renderVert,
             fragmentShader: renderFrag,
@@ -329,6 +344,15 @@ export class ParticleSystem {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- uniforms value types are heterogeneous
     getVelocityUniforms(): Record<string, { value: any }> {
         return this.velocityVariable.material.uniforms;
+    }
+
+    /**
+     * Get the render (point) material uniforms object.
+     * Used by HarmonicsManager to color dots by the harmonic field.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- uniforms value types are heterogeneous
+    getRenderUniforms(): Record<string, { value: any }> {
+        return (this.particles.material as THREE.ShaderMaterial).uniforms;
     }
 
     dispose() {

@@ -41,7 +41,22 @@ uniform float uEmotionalIntensity; // 0–1, from classifier
 uniform float uEmotionArousal;     // 0–1, from SER (calm→excited)
 uniform float uEmotionDominance;   // 0–1, from SER (submissive→dominant)
 
+// Connectome harmonics coloring
+uniform float uHarmonicColor;      // 0.0 = off, 1.0 = color dots by harmonic field
+
 varying vec2 vUV;           // Per-particle UV from vertex shader
+varying float vHarmonic;    // Per-particle harmonic field value, signed [-1, 1]
+
+// ── COOLWARM DIVERGING COLORMAP ──────────────────────────────────────
+// Matches the connectome-harmonics viewer: blue (negative) ↔ white
+// (zero crossing / nodal line) ↔ red (positive).
+vec3 coolwarm(float t) {
+    float x = clamp(t * 0.5 + 0.5, 0.0, 1.0);
+    vec3 cold = vec3(0.23, 0.30, 0.75);
+    vec3 mid  = vec3(0.95, 0.95, 0.95);
+    vec3 warm = vec3(0.80, 0.10, 0.16);
+    return x < 0.5 ? mix(cold, mid, x * 2.0) : mix(mid, warm, (x - 0.5) * 2.0);
+}
 
 // ── HSL → RGB CONVERSION ─────────────────────────────────────────────
 vec3 hsl2rgb(float h, float s, float l) {
@@ -136,7 +151,14 @@ void main() {
     // ── COLOR SYSTEM ──────────────────────────────────────────────
     vec3 finalColor;
 
-    if (uColorMode > 0.5) {
+    if (uHarmonicColor > 0.5) {
+        // ── CONNECTOME HARMONIC MODE: coolwarm field coloring ─────
+        // Boost saturation of the extremes so the oscillating red/blue
+        // "highs" read clearly through additive blending on the dark bg.
+        finalColor = coolwarm(vHarmonic);
+        float mag = abs(vHarmonic);
+        finalColor *= 0.85 + 0.9 * mag;   // brighten the peaks
+    } else if (uColorMode > 0.5) {
         // ── COLOR MODE: Plutchik Emotion Wheel ────────────────────
         //
         // Map (valence, arousal) → hue via the Plutchik circumplex.

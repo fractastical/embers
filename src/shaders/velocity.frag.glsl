@@ -38,6 +38,14 @@ uniform float uRepulsionStrength;
 uniform float uSentimentMovement;
 uniform float uSentimentMovementIntensity;
 
+// Connectome harmonics — per-dot oscillating scalar field.
+// tHarmonicField.r carries a signed field in [-1, 1] (see ConnectomeHarmonics.ts).
+// The field displaces each dot's spring target along its outward normal,
+// so the cloud oscillates in graph-Laplacian eigenmode fashion.
+uniform sampler2D tHarmonicField;
+uniform float uHarmonicActive;
+uniform float uHarmonicAmp;
+
 // [Insert Simplex Noise Functions Here - same as before]
 // Simplex 3D Noise 
 // by Ian McEwan, Ashima Arts
@@ -279,6 +287,17 @@ void main() {
         targetPos += motionDisplacement;
     }
     #endif
+
+    // ── CONNECTOME HARMONICS DISPLACEMENT ─────────────────────────────
+    // Sample this dot's harmonic field value and push its spring target
+    // along the outward (radial) normal. Standing-wave eigenmodes make the
+    // cloud ripple/breathe in connectome-harmonic fashion; the spring then
+    // supplies organic overshoot and settle.
+    if (uHarmonicActive > 0.5) {
+        float harmonicField = texture2D(tHarmonicField, uv).r;
+        vec3 harmonicDir = length(radialDir) > 0.0001 ? radialDir : normalize(position + 1e-4);
+        targetPos += harmonicDir * harmonicField * uHarmonicAmp;
+    }
 
     // ── BREATHINESS → Z-AXIS SPREAD ───────────────────────────────────
     // Breathy speech makes the ring "puff out" in the Z axis, creating

@@ -13,6 +13,7 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { ParticleSystem } from '../engine/ParticleSystem';
+import { HarmonicsManager } from '../engine/HarmonicsManager';
 import { UniformBridge } from '../engine/UniformBridge';
 import { SemanticBackend } from '../services/SemanticBackend';
 import { SERManager } from '../audio/SERManager';
@@ -128,6 +129,24 @@ export function useThreeScene(
         scene.add(particles.particles);
         particleSystemRef.current = particles;
 
+        // ── CONNECTOME HARMONICS ──────────────────────────────────────
+        // Loads graph-Laplacian eigenmodes of a structural connectome and
+        // drives the dots as an oscillating standing-wave field. Off by
+        // default; toggle with the "h" key (see keyboard shortcuts below).
+        const harmonicsManager = new HarmonicsManager(
+            particles.getVelocityUniforms(), particles.getRenderUniforms(), particles.size,
+        );
+        let harmonicMode = 3;
+        let harmonicTargetBeforeEnable = particles.currentTarget;
+        harmonicsManager.load()
+            .then(() => {
+                harmonicsManager.setMode(harmonicMode);
+                console.log('[useThreeScene] connectome harmonics loaded — press "h" to toggle');
+            })
+            .catch((e) => console.warn('[useThreeScene] harmonics load failed:', e));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (window as any).__harmonics = harmonicsManager;
+
         // ── UNIFORM BRIDGE ────────────────────────────────────────────────────
         const uniformBridge = new UniformBridge(audioEngine, particles, tuningConfig, workspaceEngine);
         uniformBridgeRef.current = uniformBridge;
@@ -217,6 +236,39 @@ export function useThreeScene(
         };
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+            // Connectome harmonics controls:
+            //   h       → toggle oscillation (forms/leaves the connectome layout)
+            //   [ / ]   → previous / next single harmonic mode
+            //   m       → low-mode standing-wave superposition
+            if (e.key === 'h' && harmonicsManager.harmonics.loaded && particleSystemRef.current) {
+                const nowActive = harmonicsManager.toggle();
+                if (nowActive) {
+                    harmonicTargetBeforeEnable = particleSystemRef.current.currentTarget;
+                    particleSystemRef.current.setTargetTexture(harmonicsManager.connectomeTarget, 'connectome');
+                } else {
+                    const restore = shapeKeys[Object.keys(shapeKeys)[0]];
+                    particleSystemRef.current.setTarget(
+                        harmonicTargetBeforeEnable && harmonicTargetBeforeEnable !== 'connectome'
+                            ? harmonicTargetBeforeEnable
+                            : (restore ?? 'ring'),
+                    );
+                }
+                return;
+            }
+            if ((e.key === '[' || e.key === ']') && harmonicsManager.harmonics.loaded) {
+                harmonicMode += e.key === ']' ? 1 : -1;
+                if (harmonicMode < 0) harmonicMode = 0;
+                harmonicsManager.setMode(harmonicMode);
+                console.log(`[harmonics] ${harmonicsManager.harmonics.selection}`);
+                return;
+            }
+            if (e.key === 'm' && harmonicsManager.harmonics.loaded) {
+                harmonicsManager.setMix([0, 1, 2, 3], undefined, [0, Math.PI / 2, Math.PI, Math.PI / 3]);
+                console.log(`[harmonics] ${harmonicsManager.harmonics.selection}`);
+                return;
+            }
+
             const shapeName = shapeKeys[e.key];
             if (shapeName && particleSystemRef.current) {
                 particleSystemRef.current.setTarget(shapeName);
@@ -286,6 +338,12 @@ export function useThreeScene(
             semanticBackendRef.current?.update(dt);
             uniformBridgeRef.current?.update();
 
+            // Refresh the connectome-harmonic field texture for this frame
+            // (uses the sim clock so oscillation is framerate-independent).
+            if (particleSystemRef.current) {
+                harmonicsManager.update(particleSystemRef.current.time);
+            }
+
             // Update camera Z from TuningConfig slider
             const z = tuningConfig.get('cameraZ');
             if (camera.position.z !== z) {
@@ -337,6 +395,9 @@ export function useThreeScene(
             delete (window as any).__particles;
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             delete (window as any).__semantic;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            delete (window as any).__harmonics;
+            harmonicsManager.dispose();
 
             if (semanticBackendRef.current) {
                 semanticBackendRef.current.dispose();
