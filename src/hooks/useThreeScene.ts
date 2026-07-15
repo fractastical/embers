@@ -130,31 +130,45 @@ export function useThreeScene(
         particleSystemRef.current = particles;
 
         // ── CONNECTOME HARMONICS ──────────────────────────────────────
-        // Loads graph-Laplacian eigenmodes of a structural connectome and
-        // drives the dots as an oscillating standing-wave field. Off by
-        // default; toggle with the "h" key (see keyboard shortcuts below).
+        // The connectome/Kuramoto view is the IDLE ("brain") state: it shows
+        // when no speech-generated model is active, and automatically steps
+        // aside when the semantic pipeline morphs the dots into a model — then
+        // returns once the pipeline goes back to its default idle shape.
+        // The "h" key is a master switch to disable the brain view entirely.
+        const CONNECTOME_LABEL = 'connectome';
+        const IDLE_SHAPE = 'ring';   // matches SemanticBackend DEFAULT_SHAPE
         const harmonicsManager = new HarmonicsManager(
             particles.getVelocityUniforms(), particles.getRenderUniforms(), particles.size,
         );
         let harmonicMode = 3;
-        let harmonicTargetBeforeEnable = particles.currentTarget;
+        let brainEnabled = true;     // master switch (toggled by "h")
         harmonicsManager.load()
             .then(() => {
-                // Show the connectome by default: form the anatomical layout
-                // and start the coupled-oscillator (Kuramoto) view, where phase
-                // colour flows across the connectome by connectivity/proximity.
-                // Press "h" to toggle back to the normal shapes.
-                if (particleSystemRef.current) {
-                    harmonicTargetBeforeEnable = particleSystemRef.current.currentTarget;
-                    particleSystemRef.current.setTargetTexture(harmonicsManager.connectomeTarget, 'connectome');
-                    harmonicsManager.setKuramoto();
-                    harmonicsManager.enable();
-                }
-                console.log('[useThreeScene] connectome harmonics active — press "h" to toggle');
+                harmonicsManager.setKuramoto();
+                console.log('[useThreeScene] connectome harmonics loaded — idle "brain" view');
             })
             .catch((e) => console.warn('[useThreeScene] harmonics load failed:', e));
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (window as any).__harmonics = harmonicsManager;
+
+        // Idle coordinator: brain shows only when the pipeline isn't rendering
+        // a generated model. Edge-triggered so it never fights SemanticBackend
+        // over the morph target.
+        const updateBrainState = () => {
+            const ps = particleSystemRef.current;
+            if (!ps || !harmonicsManager.harmonics.loaded) return;
+            const cur = ps.currentTarget;
+            const modelActive = cur !== IDLE_SHAPE && cur !== CONNECTOME_LABEL;
+            if (!brainEnabled || modelActive) {
+                if (harmonicsManager.isActive) harmonicsManager.disable();
+            } else {
+                // Idle → ensure the connectome layout + oscillation are shown.
+                if (cur !== CONNECTOME_LABEL) {
+                    ps.setTargetTexture(harmonicsManager.connectomeTarget, CONNECTOME_LABEL);
+                }
+                if (!harmonicsManager.isActive) harmonicsManager.enable();
+            }
+        };
 
         // ── UNIFORM BRIDGE ────────────────────────────────────────────────────
         const uniformBridge = new UniformBridge(audioEngine, particles, tuningConfig, workspaceEngine);
@@ -247,22 +261,17 @@ export function useThreeScene(
             if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
             // Connectome harmonics controls:
-            //   h       → toggle oscillation (forms/leaves the connectome layout)
+            //   h       → master toggle for the idle "brain" view
+            //   k       → Kuramoto coupled-oscillator model
             //   [ / ]   → previous / next single harmonic mode
             //   m       → low-mode standing-wave superposition
             if (e.key === 'h' && harmonicsManager.harmonics.loaded && particleSystemRef.current) {
-                const nowActive = harmonicsManager.toggle();
-                if (nowActive) {
-                    harmonicTargetBeforeEnable = particleSystemRef.current.currentTarget;
-                    particleSystemRef.current.setTargetTexture(harmonicsManager.connectomeTarget, 'connectome');
-                } else {
-                    const restore = shapeKeys[Object.keys(shapeKeys)[0]];
-                    particleSystemRef.current.setTarget(
-                        harmonicTargetBeforeEnable && harmonicTargetBeforeEnable !== 'connectome'
-                            ? harmonicTargetBeforeEnable
-                            : (restore ?? 'ring'),
-                    );
+                brainEnabled = !brainEnabled;
+                if (!brainEnabled && particleSystemRef.current.currentTarget === CONNECTOME_LABEL) {
+                    // Leaving the brain view — fall back to the idle shape.
+                    particleSystemRef.current.setTarget(IDLE_SHAPE);
                 }
+                console.log(`[harmonics] brain view ${brainEnabled ? 'enabled' : 'disabled'}`);
                 return;
             }
             if (e.key === 'k' && harmonicsManager.harmonics.loaded) {
@@ -352,8 +361,9 @@ export function useThreeScene(
             semanticBackendRef.current?.update(dt);
             uniformBridgeRef.current?.update();
 
-            // Refresh the connectome-harmonic field texture for this frame
-            // (uses the sim clock so oscillation is framerate-independent).
+            // Decide whether the idle "brain" view should be showing (it yields
+            // to any speech-generated model), then refresh the harmonic field.
+            updateBrainState();
             if (particleSystemRef.current) {
                 harmonicsManager.update(particleSystemRef.current.time);
             }
