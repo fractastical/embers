@@ -111,6 +111,23 @@ export class HarmonicsManager {
     update(t: number): void {
         if (!this.active) return;
         this.harmonics.update(t);
+        // Keep the render colormap in sync with the active model.
+        if (this.renderUniforms?.uHarmonicColorMode) {
+            this.renderUniforms.uHarmonicColorMode.value = this.harmonics.isPhaseColor ? 1.0 : 0.0;
+        }
+    }
+
+    /** Coupled-oscillator synchronization view (source viewer default). */
+    setKuramoto(): void {
+        this.harmonics.setKuramoto();
+    }
+
+    /** Kuramoto coupling strength K. */
+    set coupling(v: number) {
+        this.harmonics.coupling = v;
+    }
+    get coupling(): number {
+        return this.harmonics.coupling;
     }
 
     dispose(): void {

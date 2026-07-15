@@ -140,8 +140,17 @@ export function useThreeScene(
         let harmonicTargetBeforeEnable = particles.currentTarget;
         harmonicsManager.load()
             .then(() => {
-                harmonicsManager.setMode(harmonicMode);
-                console.log('[useThreeScene] connectome harmonics loaded — press "h" to toggle');
+                // Show the connectome by default: form the anatomical layout
+                // and start the coupled-oscillator (Kuramoto) view, where phase
+                // colour flows across the connectome by connectivity/proximity.
+                // Press "h" to toggle back to the normal shapes.
+                if (particleSystemRef.current) {
+                    harmonicTargetBeforeEnable = particleSystemRef.current.currentTarget;
+                    particleSystemRef.current.setTargetTexture(harmonicsManager.connectomeTarget, 'connectome');
+                    harmonicsManager.setKuramoto();
+                    harmonicsManager.enable();
+                }
+                console.log('[useThreeScene] connectome harmonics active — press "h" to toggle');
             })
             .catch((e) => console.warn('[useThreeScene] harmonics load failed:', e));
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -254,6 +263,11 @@ export function useThreeScene(
                             : (restore ?? 'ring'),
                     );
                 }
+                return;
+            }
+            if (e.key === 'k' && harmonicsManager.harmonics.loaded) {
+                harmonicsManager.setKuramoto();
+                console.log(`[harmonics] ${harmonicsManager.harmonics.selection}`);
                 return;
             }
             if ((e.key === '[' || e.key === ']') && harmonicsManager.harmonics.loaded) {

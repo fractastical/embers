@@ -168,6 +168,7 @@ export class ParticleSystem {
                 // with the velocity shader; HarmonicsManager toggles the mode.
                 tHarmonicField: { value: harmonicDefault },
                 uHarmonicColor: { value: 0.0 },
+                uHarmonicColorMode: { value: 1.0 },  // 0 = coolwarm, 1 = phase wheel
             },
             vertexShader: renderVert,
             fragmentShader: renderFrag,

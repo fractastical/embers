@@ -43,19 +43,36 @@ uniform float uEmotionDominance;   // 0–1, from SER (submissive→dominant)
 
 // Connectome harmonics coloring
 uniform float uHarmonicColor;      // 0.0 = off, 1.0 = color dots by harmonic field
+uniform float uHarmonicColorMode;  // 0.0 = coolwarm (signed), 1.0 = phase wheel (Kuramoto)
 
 varying vec2 vUV;           // Per-particle UV from vertex shader
 varying float vHarmonic;    // Per-particle harmonic field value, signed [-1, 1]
+varying float vHarmonicU;   // Per-particle phase-wheel parameter u∈[0,1]
 
 // ── COOLWARM DIVERGING COLORMAP ──────────────────────────────────────
-// Matches the connectome-harmonics viewer: blue (negative) ↔ white
-// (zero crossing / nodal line) ↔ red (positive).
+// Saturated diverging map tuned for ADDITIVE blending with many overlapping
+// dots per node: red (positive) ↔ dark (zero crossing / nodal line) ↔ blue
+// (negative). Keeping the off-hue channels low means stacked sprites keep
+// their hue instead of summing to white, and the |field| magnitude drives
+// brightness so the oscillating "highs" pulse and nodal lines fade out.
 vec3 coolwarm(float t) {
-    float x = clamp(t * 0.5 + 0.5, 0.0, 1.0);
-    vec3 cold = vec3(0.23, 0.30, 0.75);
-    vec3 mid  = vec3(0.95, 0.95, 0.95);
-    vec3 warm = vec3(0.80, 0.10, 0.16);
-    return x < 0.5 ? mix(cold, mid, x * 2.0) : mix(mid, warm, (x - 0.5) * 2.0);
+    float m = clamp(abs(t), 0.0, 1.0);
+    vec3 warm = vec3(1.0, 0.16, 0.10);   // positive lobe → red
+    vec3 cold = vec3(0.12, 0.42, 1.0);   // negative lobe → blue
+    vec3 hue = t >= 0.0 ? warm : cold;
+    // Small dark-neutral floor keeps zero-field nodes faintly visible.
+    return mix(vec3(0.05), hue, m);
+}
+
+// ── KURAMOTO PHASE WHEEL ─────────────────────────────────────────────
+// Matches the source viewer's phaseColor(): a cyclic blue→purple→pink→red
+// arc. Input u = 0.5 - 0.5·cos(θ) ∈ [0,1], so synchronized (in-phase)
+// oscillators share a colour and phase patterns flow across the graph.
+vec3 phaseWheel(float u) {
+    float h = fract((205.0 + 175.0 * u) / 360.0);   // 205° → 380°(=20°)
+    // Inline HSV→RGB (S=0.76, V=0.98) so this stays self-contained.
+    vec3 p = abs(fract(h + vec3(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+    return 0.98 * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), 0.76);
 }
 
 // ── HSL → RGB CONVERSION ─────────────────────────────────────────────
@@ -152,12 +169,17 @@ void main() {
     vec3 finalColor;
 
     if (uHarmonicColor > 0.5) {
-        // ── CONNECTOME HARMONIC MODE: coolwarm field coloring ─────
-        // Boost saturation of the extremes so the oscillating red/blue
-        // "highs" read clearly through additive blending on the dark bg.
-        finalColor = coolwarm(vHarmonic);
-        float mag = abs(vHarmonic);
-        finalColor *= 0.85 + 0.9 * mag;   // brighten the peaks
+        // ── CONNECTOME HARMONIC MODE ──────────────────────────────
+        if (uHarmonicColorMode > 0.5) {
+            // Kuramoto: colour each dot by its oscillator phase, so
+            // synchronized (connected/nearby) regions share a hue and
+            // phase patterns flow across the connectome.
+            finalColor = phaseWheel(vHarmonicU);
+        } else {
+            // Eigen/mix standing wave: coolwarm by signed field. Gain
+            // spreads the mostly-small eigenmode values (mean |ψ|≈0.12).
+            finalColor = coolwarm(vHarmonic * 2.4);
+        }
     } else if (uColorMode > 0.5) {
         // ── COLOR MODE: Plutchik Emotion Wheel ────────────────────
         //

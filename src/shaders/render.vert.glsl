@@ -8,11 +8,14 @@ uniform sampler2D tHarmonicField;
 uniform float uHarmonicColor;
 
 varying vec2 vUV;
-varying float vHarmonic;
+varying float vHarmonic;   // R: signed displacement field (coolwarm)
+varying float vHarmonicU;  // G: phase-wheel parameter u∈[0,1] (Kuramoto)
 
 void main() {
     vUV = uv;
-    vHarmonic = uHarmonicColor > 0.5 ? texture2D(tHarmonicField, uv).r : 0.0;
+    vec2 hf = uHarmonicColor > 0.5 ? texture2D(tHarmonicField, uv).rg : vec2(0.0);
+    vHarmonic = hf.r;
+    vHarmonicU = hf.g;
     vec4 pos = texture2D(texturePosition, uv);
     
     vec4 mvPosition = modelViewMatrix * vec4(pos.xyz, 1.0);

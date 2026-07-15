@@ -41,6 +41,7 @@ import * as THREE from 'three';
 interface HarmonicsData {
     nodes: number[][];
     nodes3d?: number[][];
+    edges?: number[][];
     eigvals: number[];
     modes: number[][];
     networks?: string[];
@@ -72,7 +73,23 @@ export class ConnectomeHarmonics {
     /** Per-mode eigenvector, normalized to unit peak (|ψ| ≤ 1). */
     private modes: Float32Array[] = [];
     /** Temporal angular frequency per mode: 0.8 + 2.2·√λ_k. */
-    private omega: number[] = [];
+    private modeOmega: number[] = [];
+
+    // ── Kuramoto coupled-oscillator state ───────────────────────────────
+    /** Edge endpoints and weights (structural connectome). */
+    private edgeI: Int32Array = new Int32Array(0);
+    private edgeJ: Int32Array = new Int32Array(0);
+    private edgeW: Float32Array = new Float32Array(0);
+    /** Per-node oscillator phase. */
+    private theta: Float32Array = new Float32Array(0);
+    /** Per-node natural frequency (spatially graded, like the source viewer). */
+    private natFreq: Float32Array = new Float32Array(0);
+    /** Scratch for phase increments. */
+    private dTheta: Float32Array = new Float32Array(0);
+    /** Coupling strength K. */
+    coupling = 1.2;
+    /** Last update timestamp (seconds) for dt derivation. */
+    private lastT = -1;
     /** World-space node positions (nodeCount×3, interleaved xyz). */
     private nodePos: Float32Array = new Float32Array(0);
     /** Node index assigned to each dot (length = count). */
@@ -90,7 +107,8 @@ export class ConnectomeHarmonics {
 
     /** Playback controls. */
     speed = 1.0;
-    /** Time scrub (seconds); advanced by update(). */
+    /** Active field model. 'kuramoto' matches the source viewer's default. */
+    model: 'kuramoto' | 'eigen' | 'mix' = 'kuramoto';
     private modeIndex = 3;
     private mix: { indices: number[]; coeffs: number[]; phases: number[] } | null = null;
 
@@ -144,7 +162,32 @@ export class ConnectomeHarmonics {
             if (peak > 1e-9) for (let i = 0; i < arr.length; i++) arr[i] /= peak;
             return arr;
         });
-        this.omega = data.eigvals.map((lambda) => 0.8 + 2.2 * Math.sqrt(Math.max(0, lambda)));
+        this.modeOmega = data.eigvals.map((lambda) => 0.8 + 2.2 * Math.sqrt(Math.max(0, lambda)));
+
+        // ── Kuramoto setup (coupled oscillators on the connectome) ───────
+        // Natural frequencies are spatially graded (like the source viewer),
+        // so nearby regions drift together and coupling along edges
+        // synchronizes connected regions — phase (colour) flows by proximity.
+        const edges = data.edges ?? [];
+        this.edgeI = new Int32Array(edges.length);
+        this.edgeJ = new Int32Array(edges.length);
+        this.edgeW = new Float32Array(edges.length);
+        for (let e = 0; e < edges.length; e++) {
+            this.edgeI[e] = edges[e][0];
+            this.edgeJ[e] = edges[e][1];
+            this.edgeW[e] = edges[e][2];
+        }
+        this.theta = new Float32Array(this.nodeCount);
+        this.natFreq = new Float32Array(this.nodeCount);
+        this.dTheta = new Float32Array(this.nodeCount);
+        const rand = this.mulberry32(0x9e3779b9);
+        const nodes2d = data.nodes;
+        for (let n = 0; n < this.nodeCount; n++) {
+            this.theta[n] = (rand() * 2 - 1) * Math.PI;
+            const x = nodes2d[n]?.[0] ?? 0;
+            const y = nodes2d[n]?.[1] ?? 0;
+            this.natFreq[n] = 0.5 + 0.85 * y + 0.45 * x + 0.12 * (rand() * 2 - 1);
+        }
 
         // ── Center + scale node coords into the dot-cloud world ──────────
         // MNI RAS → three.js: x = R (left/right), y = S (up), z = A (depth).
@@ -179,6 +222,17 @@ export class ConnectomeHarmonics {
         this.connectomeTarget.needsUpdate = true;
     }
 
+    /** Seeded PRNG (mulberry32) → deterministic oscillator initialization. */
+    private mulberry32(seed: number): () => number {
+        let a = seed >>> 0;
+        return () => {
+            a |= 0; a = (a + 0x6d2b79f5) | 0;
+            let t = Math.imul(a ^ (a >>> 15), 1 | a);
+            t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+            return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+    }
+
     /** Cheap deterministic pseudo-random in [0,1) from an integer + salt. */
     private hash(i: number, salt: number): number {
         const x = Math.sin((i + 1) * 12.9898 + salt * 78.233) * 43758.5453;
@@ -198,10 +252,16 @@ export class ConnectomeHarmonics {
 
     // ── Playback selection ────────────────────────────────────────────
 
+    /** Coupled-oscillator synchronization view (the source viewer default). */
+    setKuramoto(): void {
+        this.model = 'kuramoto';
+    }
+
     /** Oscillate a single harmonic mode (0-indexed). */
     setMode(index: number): void {
         this.modeIndex = Math.max(0, Math.min(this.modeCount - 1, index));
         this.mix = null;
+        this.model = 'eigen';
     }
 
     /**
@@ -217,10 +277,17 @@ export class ConnectomeHarmonics {
             coeffs: coeffs ?? idx.map((_, r) => 1 / (r + 1)),
             phases: phases ?? idx.map(() => 0),
         };
+        this.model = 'mix';
+    }
+
+    /** Whether the render should use the phase wheel (Kuramoto) vs coolwarm. */
+    get isPhaseColor(): boolean {
+        return this.model === 'kuramoto';
     }
 
     /** Current selection description (for HUD/debug). */
     get selection(): string {
+        if (this.model === 'kuramoto') return `kuramoto (K=${this.coupling.toFixed(2)})`;
         return this.mix
             ? `mix[${this.mix.indices.map((k) => k + 1).join(',')}]`
             : `mode ${this.modeIndex + 1}`;
@@ -229,37 +296,84 @@ export class ConnectomeHarmonics {
     // ── Per-frame field evaluation ──────────────────────────────────────
 
     /**
-     * Evaluate the harmonic field at time `t` (seconds) and scatter it into
-     * the field texture's R channel via the dot→node map.
+     * Advance the field at simulation time `t` (seconds) and scatter it into
+     * the field texture:
+     *   R channel → signed displacement field (drives radial motion)
+     *   G channel → phase-wheel parameter u∈[0,1] for Kuramoto colouring
+     * The velocity shader reads R; the render shader reads R (coolwarm) or G
+     * (phase wheel) depending on the active model.
      */
     update(t: number): void {
         if (!this.loaded) return;
         const field = this.field;
 
-        if (this.mix && this.mix.indices.length > 0) {
+        if (this.model === 'kuramoto') {
+            const dt = this.lastT < 0 ? 0 : Math.max(0, Math.min(0.05, t - this.lastT));
+            this.stepKuramoto(dt);
+            const out = this.fieldData;
+            const dotNode = this.dotNode;
+            const theta = this.theta;
+            for (let i = 0; i < this.count; i++) {
+                const th = theta[dotNode[i]];
+                out[i * 4] = Math.sin(th);              // R → displacement
+                out[i * 4 + 1] = 0.5 - 0.5 * Math.cos(th); // G → phase-wheel u
+            }
+            this.fieldTexture.needsUpdate = true;
+            this.lastT = t;
+            return;
+        }
+
+        if (this.model === 'mix' && this.mix && this.mix.indices.length > 0) {
             field.fill(0);
             const { indices, coeffs, phases } = this.mix;
             for (let m = 0; m < indices.length; m++) {
                 const k = indices[m];
                 const mode = this.modes[k];
-                const wave = coeffs[m] * Math.cos(t * this.speed * this.omega[k] + phases[m]);
+                const wave = coeffs[m] * Math.cos(t * this.speed * this.modeOmega[k] + phases[m]);
                 for (let n = 0; n < this.nodeCount; n++) field[n] += wave * mode[n];
             }
-            // Normalize the superposition to unit peak for a stable amplitude.
             let peak = 1e-9;
             for (let n = 0; n < this.nodeCount; n++) peak = Math.max(peak, Math.abs(field[n]));
             for (let n = 0; n < this.nodeCount; n++) field[n] /= peak;
         } else {
             const k = this.modeIndex;
             const mode = this.modes[k];
-            const phase = Math.cos(t * this.speed * this.omega[k]);
+            const phase = Math.cos(t * this.speed * this.modeOmega[k]);
             for (let n = 0; n < this.nodeCount; n++) field[n] = mode[n] * phase;
         }
 
         const out = this.fieldData;
         const dotNode = this.dotNode;
-        for (let i = 0; i < this.count; i++) out[i * 4] = field[dotNode[i]];
+        for (let i = 0; i < this.count; i++) {
+            const v = field[dotNode[i]];
+            out[i * 4] = v;
+            out[i * 4 + 1] = v;
+        }
         this.fieldTexture.needsUpdate = true;
+        this.lastT = t;
+    }
+
+    /**
+     * One Kuramoto integration step over the connectome edges:
+     *   θᵢ' = ωᵢ + K · Σⱼ wᵢⱼ · sin(θⱼ − θᵢ)
+     * Coupling pulls connected regions into sync, so phase patterns
+     * propagate across the graph by connectivity/proximity.
+     */
+    private stepKuramoto(dt: number): void {
+        if (dt <= 0) return;
+        const dtEff = Math.min(dt, 0.033) * (0.4 + this.speed);
+        const K = this.coupling;
+        const d = this.dTheta;
+        d.fill(0);
+        const ei = this.edgeI, ej = this.edgeJ, ew = this.edgeW, theta = this.theta;
+        for (let e = 0; e < ei.length; e++) {
+            const i = ei[e], j = ej[e];
+            const force = K * ew[e] * Math.sin(theta[j] - theta[i]);
+            d[i] += force;
+            d[j] -= force;
+        }
+        const nat = this.natFreq;
+        for (let n = 0; n < this.nodeCount; n++) theta[n] += dtEff * (nat[n] + d[n]);
     }
 
     dispose(): void {
